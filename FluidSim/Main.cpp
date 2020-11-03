@@ -2,13 +2,12 @@
 #include <fstream>
 #include <cmath>
 
-//# define SIZE 100
 // grid size:
 constexpr int SIZE = 50;
 // grid spacing:
 constexpr double dx = 1.;
-constexpr double inv_dx = 1.; // for speed
-// constexpr double dy = 1.; same as dx...
+// for speed mult is faster than div:
+constexpr double inv_dx = 1.;
 // step in time:
 constexpr double dt = 1.;
 // "kinematic viscosity"
@@ -54,7 +53,7 @@ Vec2D vecAdd(const Vec2D& l, const Vec2D& r)
 
 Vec2D compute_force(const Vec2D& pt, const PtForce& f)
 {
-	// compute 1/r potential i.e. f=q/r rhat direction
+	// compute 1/r force i.e. f=q/r rhat direction
 	double magnitude = f.magnitude / (delta + abs(sqrt(pow(f.position.x, 2) + pow(f.position.y, 2)) - sqrt(pow(pt.x, 2) + pow(pt.y, 2))));
 	Vec2D direction = { pt.x - f.position.x, pt.y - f.position.y };
 	return vecScale(direction, magnitude);
@@ -187,8 +186,8 @@ void iterative_poisson_pressure(ScalarVecField* p, ScalarVecField* temp, VecVecF
 				temp->data[y][x] = inv_beta * (p->data[y - 1][x] + p->data[y + 1][x] + p->data[y][x + 1] + p->data[y][x - 1] + vec_div(w, x, y));
 			}
 		}
+		copy_temp_to_p(p, temp);
 	}
-	copy_temp_to_p(p, temp);
 }
 
 void subtract_pressure_gradient(VecVecField* w, ScalarVecField* p)
