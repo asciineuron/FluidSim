@@ -1,9 +1,14 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include <vector>
+#include <windows.h>
+#include <synchapi.h> // sleep
+#include "DataTypes.h"
+#include "GLDisplay.h"
 
-// grid size:
-constexpr int SIZE = 50;
+
+
 // grid spacing:
 constexpr double dx = 1.;
 // for speed mult is faster than div:
@@ -15,41 +20,6 @@ constexpr double nu = 1.;
 // for singularity at force...
 constexpr double delta = 0.1;
 
-typedef struct Vec2D
-{
-	double x;
-	double y;
-} Vec2D;
-
-typedef struct VecVecField
-{
-	Vec2D data[SIZE][SIZE];
-} VecVecField;
-
-typedef struct ScalarVecField
-{
-	double data[SIZE][SIZE];
-} ScalarVecField;
-
-typedef struct PtForce
-{
-	Vec2D position;
-	double magnitude;
-} PtForce;
-
-double vecMag(const Vec2D& v)
-{
-	return sqrt(pow(v.x, 2) + pow(v.y, 2));
-}
-Vec2D vecScale(const Vec2D& v, double s)
-{
-	return Vec2D{ v.x * s, v.y * s };
-}
-
-Vec2D vecAdd(const Vec2D& l, const Vec2D& r)
-{
-	return Vec2D{ l.x + r.x, l.y + r.y };
-}
 
 Vec2D compute_force(const Vec2D& pt, const PtForce& f)
 {
@@ -57,50 +27,6 @@ Vec2D compute_force(const Vec2D& pt, const PtForce& f)
 	double magnitude = f.magnitude / (delta + abs(sqrt(pow(f.position.x, 2) + pow(f.position.y, 2)) - sqrt(pow(pt.x, 2) + pow(pt.y, 2))));
 	Vec2D direction = { pt.x - f.position.x, pt.y - f.position.y };
 	return vecScale(direction, magnitude);
-}
-
-void init_ScalarVecField(ScalarVecField* p)
-{
-	for (int y = 0; y < SIZE; y++)
-	{
-		for (int x = 0; x < SIZE; x++)
-		{
-			p->data[y][x] = 0.;
-		}
-	}
-}
-
-void init_VecVecField(VecVecField* u)
-{
-	for (int y = 0; y < SIZE; y++)
-	{
-		for (int x = 0; x < SIZE; x++)
-		{
-			u->data[y][x] = { 0., 0. };
-		}
-	}
-}
-
-void copy_temp_to_u(VecVecField* u, VecVecField* temp)
-{
-	for (int y = 0; y < SIZE; y++)
-	{
-		for (int x = 0; x < SIZE; x++)
-		{
-			u->data[y][x] = temp->data[y][x];
-		}
-	}
-}
-
-void copy_temp_to_p(ScalarVecField* p, ScalarVecField* temp)
-{
-	for (int y = 0; y < SIZE; y++)
-	{
-		for (int x = 0; x < SIZE; x++)
-		{
-			p->data[y][x] = temp->data[y][x];
-		}
-	}
 }
 
 Vec2D vec_interpolate(VecVecField* u, Vec2D& pos)
@@ -123,9 +49,9 @@ Vec2D vec_interpolate(VecVecField* u, Vec2D& pos)
 
 void advect(VecVecField* u, VecVecField* temp)
 {
-	for (int y = 1; y < SIZE - 1; y++)
+	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
-		for (int x = 1; x < SIZE - 1; x++)
+		for (int x = 1; x < GRID_SIZE - 1; x++)
 		{
 			Vec2D oldpos = { (double)x - u->data[y][x].x, (double)y - u->data[y][x].y };
 			Vec2D oldval = vec_interpolate(u, oldpos);
@@ -146,13 +72,14 @@ void iterative_poisson_diffusion(VecVecField* u, VecVecField* temp)
 	// when to stop by seeing if change overall is small
 	// i.e. add up change for each cell, see if average change
 	// within some limit
-	int number_iterations = 20;
+	// this however would be an extra expense
+	int number_iterations = 40;
 	for (int repeat = 0; repeat < number_iterations; repeat++)
 	{
 		// exclude edges?
-		for (int y = 1; y < SIZE - 1; y++)
+		for (int y = 1; y < GRID_SIZE - 1; y++)
 		{
-			for (int x = 1; x < SIZE - 1; x++)
+			for (int x = 1; x < GRID_SIZE - 1; x++)
 			{
 				temp->data[y][x] = vecScale(vecAdd(vecAdd(vecAdd(vecAdd(u->data[y - 1][x], u->data[y + 1][x]), u->data[y][x - 1]), u->data[y][x + 1]), vecScale(u->data[y][x], alpha)), inv_beta);
 			}
@@ -175,13 +102,13 @@ void iterative_poisson_pressure(ScalarVecField* p, ScalarVecField* temp, VecVecF
 	double beta = 4;
 	double inv_beta = 1 / beta;
 
-	int number_iterations = 20;
+	int number_iterations = 40;
 	for (int repeat = 0; repeat < number_iterations; repeat++)
 	{
 		// exclude edges?
-		for (int y = 1; y < SIZE - 1; y++)
+		for (int y = 1; y < GRID_SIZE - 1; y++)
 		{
-			for (int x = 1; x < SIZE - 1; x++)
+			for (int x = 1; x < GRID_SIZE - 1; x++)
 			{
 				temp->data[y][x] = inv_beta * (p->data[y - 1][x] + p->data[y + 1][x] + p->data[y][x + 1] + p->data[y][x - 1] + vec_div(w, x, y));
 			}
@@ -192,9 +119,9 @@ void iterative_poisson_pressure(ScalarVecField* p, ScalarVecField* temp, VecVecF
 
 void subtract_pressure_gradient(VecVecField* w, ScalarVecField* p)
 {
-	for (int y = 1; y < SIZE - 1; y++)
+	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
-		for (int x = 1; x < SIZE - 1; x++)
+		for (int x = 1; x < GRID_SIZE - 1; x++)
 		{
 			double grad_p_x = 0.5 * inv_dx * (p->data[y][x + 1] - p->data[y][x - 1]);
 			double grad_p_y = 0.5 * inv_dx * (p->data[y + 1][x] - p->data[y - 1][x]);
@@ -208,10 +135,10 @@ void add_force(VecVecField* u, const PtForce& f)
 {
 	// F*t = delta momentum = m * (delta v) i.e. take m=1 get delta v, that is u
 	// just doing a simple F scalar not the vector case given.. (easier to input)
-	double impulse_radius = 1;
-	for (int y = 1; y < SIZE - 1; y++)
+	double impulse_radius = 1.;
+	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
-		for (int x = 1; x < SIZE - 1; x++)
+		for (int x = 1; x < GRID_SIZE - 1; x++)
 		{
 			Vec2D force = compute_force(u->data[y][x], f);
 			u->data[y][x].x += force.x;
@@ -222,44 +149,45 @@ void add_force(VecVecField* u, const PtForce& f)
 
 void enforce_boundary(VecVecField* u, ScalarVecField* p)
 {
-	// what to do about initial conditions vs just boundary?
 	// must have u on perimeter = 0, and normal p deriv = 0
-	// update at each step?
-	for (int i = 1; i < SIZE - 1; i++)
+	// update at each step
+	for (int i = 1; i < GRID_SIZE - 1; i++)
 	{
 		// left:
 		p->data[i][0] = p->data[i][1];
 		u->data[i][0] = vecScale(u->data[i][1], -1.);
 		// right:
-		p->data[i][SIZE - 1] = p->data[i][SIZE - 2];
-		u->data[i][SIZE - 1] = vecScale(u->data[i][SIZE - 2], 1.);
+		p->data[i][GRID_SIZE - 1] = p->data[i][GRID_SIZE - 2];
+		u->data[i][GRID_SIZE - 1] = vecScale(u->data[i][GRID_SIZE - 2], 1.);
 		// top:
-		p->data[SIZE - 1][i] = p->data[SIZE - 2][i];
-		u->data[SIZE - 1][i] = vecScale(u->data[SIZE - 2][i], -1.);
+		p->data[GRID_SIZE - 1][i] = p->data[GRID_SIZE - 2][i];
+		u->data[GRID_SIZE - 1][i] = vecScale(u->data[GRID_SIZE - 2][i], -1.);
 		// bot:
 		p->data[0][i] = p->data[1][i];
 		u->data[0][i] = vecScale(u->data[1][i], -1.);
 	}
 }
 
-void step(VecVecField* u, VecVecField* temp_u, ScalarVecField* p, ScalarVecField* temp_p, const PtForce& f1, const PtForce& f2)
+void step(VecVecField* u, VecVecField* temp_u, ScalarVecField* p, ScalarVecField* temp_p, const std::vector<PtForce>& forces)
 {
 	advect(u, temp_u);
 	iterative_poisson_diffusion(u, temp_u);
-	add_force(u, f1);
-	add_force(u, f2);
+	for (auto& f : forces)
+	{
+		// sum over all forces
+		add_force(u, f);
+	}
 	iterative_poisson_pressure(p, temp_p, u);
 	subtract_pressure_gradient(u, p);
 	// done!
 }
 
-
 void display(ScalarVecField* p)
 {
 	std::cout.precision(2); // so shorter for output
-	for (int y = 0; y < SIZE; y++)
+	for (int y = 0; y < GRID_SIZE; y++)
 	{
-		for (int x = 0; x < SIZE; x++)
+		for (int x = 0; x < GRID_SIZE; x++)
 		{
 			std::cout << p->data[y][x] << " ";
 		}
@@ -275,13 +203,13 @@ void print_to_ppm(const ScalarVecField& p)
 	int num_shades = 255; // what to set to?
 	std::ofstream file;
 	file.open("img.ppm", std::ios::trunc);
-	file << "P3\n" << SIZE << " " << SIZE << "\n" << num_shades << "\n";
+	file << "P3\n" << GRID_SIZE << " " << GRID_SIZE << "\n" << num_shades << "\n";
 	// first determine range of values:
 	double min_value = 0.;
 	double max_value = 0.;
-	for (int y = 0; y < SIZE; y++)
+	for (int y = 0; y < GRID_SIZE; y++)
 	{
-		for (int x = 0; x < SIZE; x++)
+		for (int x = 0; x < GRID_SIZE; x++)
 		{
 			if (p.data[y][x] > max_value)
 				max_value = p.data[y][x];
@@ -290,9 +218,9 @@ void print_to_ppm(const ScalarVecField& p)
 		}
 	}
 	//double range = max_value - min_value;
-	for (int y = 0; y < SIZE; y++)
+	for (int y = 0; y < GRID_SIZE; y++)
 	{
-		for (int x = 0; x < SIZE; x++)
+		for (int x = 0; x < GRID_SIZE; x++)
 		{
 			// i.e. largest goes to max shade... not a perfect soln if a lot are much less
 			// will handle negative as a different color
@@ -321,13 +249,13 @@ void print_vel_to_ppm(const VecVecField& u)
 	int num_shades = 255; // what to set to?
 	std::ofstream file;
 	file.open("velimg.ppm", std::ios::trunc);
-	file << "P3\n" << SIZE << " " << SIZE << "\n" << num_shades << "\n";
+	file << "P3\n" << GRID_SIZE << " " << GRID_SIZE << "\n" << num_shades << "\n";
 	// first determine range of values:
 	double max_valuex = 0.;
 	double max_valuey = 0.;
-	for (int y = 0; y < SIZE; y++)
+	for (int y = 0; y < GRID_SIZE; y++)
 	{
-		for (int x = 0; x < SIZE; x++)
+		for (int x = 0; x < GRID_SIZE; x++)
 		{
 			if (abs(u.data[y][x].x) > max_valuex)
 				max_valuex = abs(u.data[y][x].x);
@@ -338,9 +266,9 @@ void print_vel_to_ppm(const VecVecField& u)
 	max_valuex = 2;
 	max_valuey = 2;
 	//double range = max_value - min_value;
-	for (int y = 0; y < SIZE; y++)
+	for (int y = 0; y < GRID_SIZE; y++)
 	{
-		for (int x = 0; x < SIZE; x++)
+		for (int x = 0; x < GRID_SIZE; x++)
 		{
 			// i.e. largest goes to max shade... not a perfect soln if a lot are much less
 			// will handle negative as a different color
@@ -352,6 +280,77 @@ void print_vel_to_ppm(const VecVecField& u)
 		}
 		file << "\n";
 	}
+}
+
+inline float grid_to_screen(int gridpos)
+{
+	// convert grid pos in 0..SIZE
+	// to screen coord in -1..1
+	// was just int div error... std::cout << gridpos << " " << 2 * ((float)gridpos - 0.5 * SIZE) * INV_SIZE << std::endl;
+	return 2 * ((float)gridpos - 0.5 * (GRID_SIZE-1.)) * INV_SIZE_SMALL; //(float)gridpos / (GRID_SIZE-1);//2 * ((float)gridpos - 0.5 * SIZE) * INV_SIZE;
+}
+
+inline int vertex_access(int y, int x)
+{
+	// access the vertex array
+	return 3 * y * GRID_SIZE + 3 * x;
+}
+
+inline int index_access(int y, int x)
+{
+	// access the vertex array
+	return 1 * y * GRID_SIZE + 1 * x;
+}
+
+float* generate_vertices()
+{
+	// need to normalize to -1..1
+	// unfortunately doesn't match my setup, being a long 1d
+	// array rather than 2d but it's ok just be careful
+	float* vertices = new float[3 * GRID_SIZE * GRID_SIZE];
+	for (int y = 0; y < GRID_SIZE; y++)
+	{
+		for (int x = 0; x < GRID_SIZE; x++)
+		{
+			float xpos = grid_to_screen(x);
+			float ypos = grid_to_screen(y);
+			std::cout << x << " " << y << " " << xpos << " " << ypos << std::endl; // above func wrong..
+			// make sure x y z order is right
+			// convert to vertex ordering: 3 (for now, # points, larger with color) 3*x + SIZE*y yup
+			vertices[vertex_access(y, x) + 0] = xpos;
+			vertices[vertex_access(y, x) + 1] = ypos;
+			vertices[vertex_access(y, x) + 2] = 0;
+		}
+	}
+	return vertices;
+}
+
+unsigned int* generate_indices()
+{
+	// need to normalize to -1..1
+	// unfortunately doesn't match my setup, being a long 1d
+	// array rather than 2d but it's ok just be careful
+	// six lines per square from 2 triangles
+	unsigned int* indices = new unsigned int[6*(GRID_SIZE-1)*(GRID_SIZE-1)];
+	for (int y = 0; y < GRID_SIZE - 1; y++)
+	{
+		for (int x = 0; x < GRID_SIZE - 1; x++)
+		{
+			// need 6 per value of xy, following example given
+			// but problem since don't correspond to 0..3, here SIZE
+			// since many many more vertices
+			// so do 0..3 (i.e a single square) + 3*x + 3*y*SIZE i.e. 
+			// nope for a single square from bottom left xy, do 6 vertices, order not too important, but still have to group into 2 triangles:
+			// sw = xy, 2*se = x+1y, 2*nw=xy+1, ne=x+1y+1
+			indices[6*y * (GRID_SIZE - 1) + 6 * x + 0] = index_access(y, x); // sw
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 1] = index_access(y, x) + 1; // se
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 2] = index_access(y, x) + GRID_SIZE; // nw now not 3 scaled since looking at row not elem
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 3] = index_access(y, x) + 1; // se
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 4] = index_access(y, x) + GRID_SIZE + 1; // ne
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 5] = index_access(y, x) + GRID_SIZE; // nw
+		}
+	}
+	return indices;
 }
 
 int main()
@@ -367,8 +366,40 @@ int main()
 	init_ScalarVecField(p);
 	init_ScalarVecField(temp_p);
 
-	PtForce force = { {SIZE / 2. + 8, SIZE / 2}, 0.5 };
-	PtForce force2 = { {SIZE / 2. - 8, SIZE / 2}, 0.5 };
+	PtForce force = { {GRID_SIZE / 2. + 8, GRID_SIZE / 2}, 0.5 };
+	PtForce force2 = { {GRID_SIZE / 2. - 8, GRID_SIZE / 2}, 0.5 };
+	std::vector<PtForce> forces;
+	forces.push_back(force);
+	forces.push_back(force2);
+
+	GLFWwindow* glwindow = init_window();
+	
+	int num_vertices = 3 * GRID_SIZE * GRID_SIZE;//12;
+	float* vertices = generate_vertices();//new float[num_vertices];
+	// box:
+	/*vertices[0] = 0.5f;
+	vertices[1] = 0.5f;
+	vertices[2] = 0.0f;
+	vertices[3] = 0.5f;
+	vertices[4] = -0.5f;
+	vertices[5] = 0.0f;
+	vertices[6] = -0.5f;
+	vertices[7] = -0.5f;
+	vertices[8] = 0.0f;
+	vertices[9] = -0.5f;
+	vertices[10] = 0.5f;
+	vertices[11] = 0.0f;*/
+	// for square, need 6 per square, so will eventually have 6*SIZE*SIZE indices
+	// and 12*SIZE**2 vertices? ignoring overlap since more difficult I guess
+	int num_indices = 6 * (GRID_SIZE - 1) * (GRID_SIZE - 1);//6;
+	unsigned int* indices = generate_indices();//new unsigned int[num_indices]; 
+	//indices[0] = 0;
+	//indices[1] = 1;
+	//indices[2] = 3;
+	//indices[3] = 1;
+	//indices[4] = 2;
+	//indices[5] = 3;
+	GLData* gldata = init_gl(vertices, num_vertices, indices, num_indices);
 
 	for (int i = 0; i < 10; i++)
 	{
@@ -378,11 +409,17 @@ int main()
 		//display(p);
 		print_to_ppm(*p);
 		print_vel_to_ppm(*u);
-		getchar();
-		step(u, temp_u, p, temp_p, force, force2);
+		update_window(glwindow, gldata);
+		//getchar();
+		step(u, temp_u, p, temp_p, forces);
 	}
-
-
+	// when done just keep rendering openGL:
+	while (!update_window(glwindow, gldata))
+	{
+		// need to cap framerate
+		Sleep(500);
+	}
+	//getchar();
 	delete u;
 	delete temp_u;
 	delete p;
