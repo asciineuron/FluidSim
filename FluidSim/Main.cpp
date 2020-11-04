@@ -53,9 +53,18 @@ void advect(VecVecField* u, VecVecField* temp)
 	{
 		for (int x = 1; x < GRID_SIZE - 1; x++)
 		{
+			// have to ensure it is actually within bounds, else do what? guess just ignore
 			Vec2D oldpos = { (double)x - u->data[y][x].x, (double)y - u->data[y][x].y };
-			Vec2D oldval = vec_interpolate(u, oldpos);
-			temp->data[y][x] = oldval;
+			if (oldpos.x <= GRID_SIZE - 1 && oldpos.x >= 0 && oldpos.y <= GRID_SIZE - 1 && oldpos.y >= 0)
+			{ 
+				Vec2D oldval = vec_interpolate(u, oldpos);
+				temp->data[y][x] = oldval;
+			}
+			else
+			{
+				temp->data[y][x] = u->data[y][x]; // i.e. leave alone elsewise
+			}
+			
 		}
 	}
 	copy_temp_to_u(u, temp);
@@ -199,8 +208,7 @@ void display(ScalarVecField* p)
 
 void print_to_ppm(const ScalarVecField& p)
 {
-	// pgm not working well, try ppm instead
-	int num_shades = 255; // what to set to?
+	int num_shades = 255;
 	std::ofstream file;
 	file.open("img.ppm", std::ios::trunc);
 	file << "P3\n" << GRID_SIZE << " " << GRID_SIZE << "\n" << num_shades << "\n";
@@ -222,7 +230,6 @@ void print_to_ppm(const ScalarVecField& p)
 	{
 		for (int x = 0; x < GRID_SIZE; x++)
 		{
-			// i.e. largest goes to max shade... not a perfect soln if a lot are much less
 			// will handle negative as a different color
 			if (p.data[y][x] > 0)
 			{
@@ -243,10 +250,7 @@ void print_to_ppm(const ScalarVecField& p)
 void print_vel_to_ppm(const VecVecField& u)
 {
 	// add velocity by multiplying each component! i.e. R=y, G=x
-	// doesn't work well since takes max each time... maybe fix as really high?
-	// now no negative! but doesn't contain direction...
-	// pgm not working well, try ppm instead
-	int num_shades = 255; // what to set to?
+	int num_shades = 255;
 	std::ofstream file;
 	file.open("velimg.ppm", std::ios::trunc);
 	file << "P3\n" << GRID_SIZE << " " << GRID_SIZE << "\n" << num_shades << "\n";
@@ -286,40 +290,43 @@ inline float grid_to_screen(int gridpos)
 {
 	// convert grid pos in 0..SIZE
 	// to screen coord in -1..1
-	// was just int div error... std::cout << gridpos << " " << 2 * ((float)gridpos - 0.5 * SIZE) * INV_SIZE << std::endl;
-	return 2 * ((float)gridpos - 0.5 * (GRID_SIZE-1.)) * INV_SIZE_SMALL; //(float)gridpos / (GRID_SIZE-1);//2 * ((float)gridpos - 0.5 * SIZE) * INV_SIZE;
+	return 2 * ((float)gridpos - 0.5 * (GRID_SIZE-1.)) * INV_SIZE_SMALL;
 }
 
 inline int vertex_access(int y, int x)
 {
 	// access the vertex array
-	return 3 * y * GRID_SIZE + 3 * x;
+	return 6 * y * GRID_SIZE + 6 * x;
 }
 
 inline int index_access(int y, int x)
 {
-	// access the vertex array
+	// access the index array
 	return 1 * y * GRID_SIZE + 1 * x;
 }
 
 float* generate_vertices()
 {
+	// NOTE updated to have 6 components per vertex
+	// now holding rgb at each point, so stride is now 6 not 3
 	// need to normalize to -1..1
 	// unfortunately doesn't match my setup, being a long 1d
 	// array rather than 2d but it's ok just be careful
-	float* vertices = new float[3 * GRID_SIZE * GRID_SIZE];
+	float* vertices = new float[6 * GRID_SIZE * GRID_SIZE];
 	for (int y = 0; y < GRID_SIZE; y++)
 	{
 		for (int x = 0; x < GRID_SIZE; x++)
 		{
 			float xpos = grid_to_screen(x);
 			float ypos = grid_to_screen(y);
-			std::cout << x << " " << y << " " << xpos << " " << ypos << std::endl; // above func wrong..
-			// make sure x y z order is right
-			// convert to vertex ordering: 3 (for now, # points, larger with color) 3*x + SIZE*y yup
+			// NOTE technically the y flipped when going to screen coordinates (i.e. y=0 at top)...
 			vertices[vertex_access(y, x) + 0] = xpos;
 			vertices[vertex_access(y, x) + 1] = ypos;
-			vertices[vertex_access(y, x) + 2] = 0;
+			vertices[vertex_access(y, x) + 2] = 0.;
+			// initially set 0 color, add back in later
+			vertices[vertex_access(y, x) + 3] = 0.;
+			vertices[vertex_access(y, x) + 4] = 0.;
+			vertices[vertex_access(y, x) + 5] = 0;
 		}
 	}
 	return vertices;
@@ -327,30 +334,83 @@ float* generate_vertices()
 
 unsigned int* generate_indices()
 {
-	// need to normalize to -1..1
-	// unfortunately doesn't match my setup, being a long 1d
-	// array rather than 2d but it's ok just be careful
-	// six lines per square from 2 triangles
+	// six points per square, from 2 triangles
 	unsigned int* indices = new unsigned int[6*(GRID_SIZE-1)*(GRID_SIZE-1)];
 	for (int y = 0; y < GRID_SIZE - 1; y++)
 	{
 		for (int x = 0; x < GRID_SIZE - 1; x++)
 		{
-			// need 6 per value of xy, following example given
-			// but problem since don't correspond to 0..3, here SIZE
-			// since many many more vertices
-			// so do 0..3 (i.e a single square) + 3*x + 3*y*SIZE i.e. 
-			// nope for a single square from bottom left xy, do 6 vertices, order not too important, but still have to group into 2 triangles:
-			// sw = xy, 2*se = x+1y, 2*nw=xy+1, ne=x+1y+1
+			// now not scaled 3 or 6 (vs the vertices) since looking at row not elem
 			indices[6*y * (GRID_SIZE - 1) + 6 * x + 0] = index_access(y, x); // sw
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 1] = index_access(y, x) + 1; // se
-			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 2] = index_access(y, x) + GRID_SIZE; // nw now not 3 scaled since looking at row not elem
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 2] = index_access(y, x) + GRID_SIZE; // nw 
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 3] = index_access(y, x) + 1; // se
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 4] = index_access(y, x) + GRID_SIZE + 1; // ne
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 5] = index_access(y, x) + GRID_SIZE; // nw
 		}
 	}
 	return indices;
+}
+
+void color_vertices_from_p(float* vertices, const ScalarVecField& p)
+{
+	double min_value = 0.;
+	double max_value = 0.;
+	for (int y = 0; y < GRID_SIZE; y++)
+	{
+		for (int x = 0; x < GRID_SIZE; x++)
+		{
+			if (p.data[y][x] > max_value)
+				max_value = p.data[y][x];
+			if (p.data[y][x] < min_value)
+				min_value = p.data[y][x];
+		}
+	}
+	for (int y = 0; y < GRID_SIZE; y++)
+	{
+		for (int x = 0; x < GRID_SIZE; x++)
+		{
+			float xpos = grid_to_screen(x);
+			float ypos = grid_to_screen(y);
+			// use old code to convert p to r/g:
+			if (p.data[y][x] > 0)
+			{
+				float shade = (p.data[y][x]) / max_value;
+				vertices[vertex_access(y, x) + 3] = shade;
+			}
+			else
+			{
+				float shade = abs((p.data[y][x]) / min_value);
+				vertices[vertex_access(y, x) + 4] = shade;
+			}
+		}
+	}
+}
+
+void color_vertices_from_u(float* vertices, const VecVecField& u)
+{
+	double max_valuex = 0.;
+	double max_valuey = 0.;
+	for (int y = 0; y < GRID_SIZE; y++)
+	{
+		for (int x = 0; x < GRID_SIZE; x++)
+		{
+			if (abs(u.data[y][x].x) > max_valuex)
+				max_valuex = abs(u.data[y][x].x);
+			if (abs(u.data[y][x].y) > max_valuey)
+				max_valuey = abs(u.data[y][x].y);
+		}
+	}
+	for (int y = 0; y < GRID_SIZE; y++)
+	{
+		for (int x = 0; x < GRID_SIZE; x++)
+		{
+			float shadex = abs(u.data[y][x].x) / max_valuex;
+			float shadey = abs(u.data[y][x].y) / max_valuey;
+			vertices[vertex_access(y, x) + 3] = shadex;
+			vertices[vertex_access(y, x) + 5] = shadey;
+		}
+	}
 }
 
 int main()
@@ -366,6 +426,7 @@ int main()
 	init_ScalarVecField(p);
 	init_ScalarVecField(temp_p);
 
+	// add 1/r forces:
 	PtForce force = { {GRID_SIZE / 2. + 8, GRID_SIZE / 2}, 0.5 };
 	PtForce force2 = { {GRID_SIZE / 2. - 8, GRID_SIZE / 2}, 0.5 };
 	std::vector<PtForce> forces;
@@ -374,54 +435,33 @@ int main()
 
 	GLFWwindow* glwindow = init_window();
 	
-	int num_vertices = 3 * GRID_SIZE * GRID_SIZE;//12;
-	float* vertices = generate_vertices();//new float[num_vertices];
-	// box:
-	/*vertices[0] = 0.5f;
-	vertices[1] = 0.5f;
-	vertices[2] = 0.0f;
-	vertices[3] = 0.5f;
-	vertices[4] = -0.5f;
-	vertices[5] = 0.0f;
-	vertices[6] = -0.5f;
-	vertices[7] = -0.5f;
-	vertices[8] = 0.0f;
-	vertices[9] = -0.5f;
-	vertices[10] = 0.5f;
-	vertices[11] = 0.0f;*/
-	// for square, need 6 per square, so will eventually have 6*SIZE*SIZE indices
-	// and 12*SIZE**2 vertices? ignoring overlap since more difficult I guess
-	int num_indices = 6 * (GRID_SIZE - 1) * (GRID_SIZE - 1);//6;
-	unsigned int* indices = generate_indices();//new unsigned int[num_indices]; 
-	//indices[0] = 0;
-	//indices[1] = 1;
-	//indices[2] = 3;
-	//indices[3] = 1;
-	//indices[4] = 2;
-	//indices[5] = 3;
-	GLData* gldata = init_gl(vertices, num_vertices, indices, num_indices);
+	int num_vertices = 6 * GRID_SIZE * GRID_SIZE;
+	float* vertices = generate_vertices();
 
-	for (int i = 0; i < 10; i++)
+	int num_indices = 6 * (GRID_SIZE - 1) * (GRID_SIZE - 1);
+	unsigned int* indices = generate_indices();
+
+	GLData* gldata = init_gl(vertices, num_vertices, indices, num_indices);
+	Sleep(3000);
+	while(!update_window(glwindow, gldata)) // run until press escape/window closes
 	{
-		// do 20 steps for now
-		// do I want to display u or p? probably p since easier
 		enforce_boundary(u, p); // should be in step but for display purposes it is here
 		//display(p);
-		print_to_ppm(*p);
-		print_vel_to_ppm(*u);
-		update_window(glwindow, gldata);
-		//getchar();
+		//print_to_ppm(*p);
+		//print_vel_to_ppm(*u);
+		//color_vertices_from_p(vertices, *p);
+		color_vertices_from_u(vertices, *u);
+		update_gl_vertices(gldata);
 		step(u, temp_u, p, temp_p, forces);
+		getchar();//Sleep(1000);
 	}
-	// when done just keep rendering openGL:
-	while (!update_window(glwindow, gldata))
-	{
-		// need to cap framerate
-		Sleep(500);
-	}
-	//getchar();
+	
+
 	delete u;
 	delete temp_u;
 	delete p;
 	delete temp_p;
+	delete[] vertices;
+	delete[] indices;
+	delete_gldata(gldata);
 }

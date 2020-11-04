@@ -5,16 +5,20 @@
 
 const char* vertexShaderSource = "#version 460 core\n"
 "layout (location = 0) in vec3 aPos;\n"
+"layout (location = 1) in vec3 aColor;\n"
+"out vec3 ourColor;\n"
 "void main()\n"
 "{\n"
-"   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+"   gl_Position = vec4(aPos, 1.0);\n"
+"   ourColor = aColor;\n"
 "}\0";
 
 const char* fragmentShaderSource = "#version 460 core\n"
 "out vec4 FragColor;\n"
+"in vec3 ourColor;\n"
 "void main()\n"
 "{\n"
-"   FragColor = vec4(1.0f, 0.5f, 0.2f, 1.0f);\n"
+"   FragColor = vec4(ourColor, 1.0f);\n"
 "}\0";
 
 
@@ -36,7 +40,7 @@ GLFWwindow* init_window()
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-	// add more...
+
 	GLFWwindow* window = glfwCreateWindow(800, 600, "LearnOpenGL", NULL, NULL);
 
 	if (window == NULL)
@@ -60,16 +64,13 @@ GLFWwindow* init_window()
 	/*while (!glfwWindowShouldClose(window))
 	{
 		processInput(window);
-
 		glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
-
 		glfwSwapBuffers(window);
 		glfwPollEvents();
 	}
-
-
 	glfwTerminate();*/
+
 	return window;
 }
 
@@ -135,7 +136,7 @@ unsigned int gen_shader()
 	if (!success)
 	{
 		glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-		std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+		std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
 	}
 	// create/link shader program:
 	unsigned int shaderProgram;
@@ -148,7 +149,7 @@ unsigned int gen_shader()
 	if (!success)
 	{
 		glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-		std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+		std::cout << "ERROR::SHADER::PROGRAM::COMPILATION_FAILED\n" << infoLog << std::endl;
 	}
 	glUseProgram(shaderProgram);
 	glDeleteShader(vertexShader);
@@ -158,14 +159,6 @@ unsigned int gen_shader()
 
 GLData* init_gl(float* vertices, int num_vertices, unsigned int* indices, int num_indices)
 {
-	// simple case, sets up vertices... just call drawarrays later
-	// maybe, if vertex data changing add as parameter, and rerun all this (or just the glBufferData actually)
-	/*float vertices[] =
-	{
-		-0.5f, -0.5f, 0.0f,
-		 0.5f, -0.5f, 0.0f,
-		 0.0f,  0.5f, 0.0f
-	};*/
 	// generate VAO:
 	unsigned int VAO;
 	glGenVertexArrays(1, &VAO);
@@ -174,7 +167,7 @@ GLData* init_gl(float* vertices, int num_vertices, unsigned int* indices, int nu
 	unsigned int VBO;
 	glGenBuffers(1, &VBO);
 	glBindBuffer(GL_ARRAY_BUFFER, VBO);
-	// load into memory: (maybe recall when updating color?)
+	// load into memory: (will have to re-call when color updated)
 	// set to DYNAMIC vs STATIC since will be altering
 	glBufferData(GL_ARRAY_BUFFER, num_vertices*sizeof(float), vertices, GL_DYNAMIC_DRAW);
 	// generate EBO:
@@ -183,16 +176,37 @@ GLData* init_gl(float* vertices, int num_vertices, unsigned int* indices, int nu
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, num_indices * sizeof(unsigned int), indices, GL_DYNAMIC_DRAW);
 
-
 	unsigned int shader = gen_shader();
 
 	// how to interpret vertex data:
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	// position:
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(0);
+	// color:
+	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3*sizeof(float)));
+	glEnableVertexAttribArray(1);
 	// unbind VAO for safety:
 	glBindVertexArray(0);
-	//glDrawArrays(GL_TRIANGLES, 0, 3);
+
 	GLData* out = new GLData();
-	*out = { vertices, num_vertices, indices, num_indices, VAO, VBO, shader };
+	*out = { vertices, num_vertices, indices, num_indices, VAO, VBO, EBO, shader };
 	return out;
+}
+
+void update_gl_vertices(GLData* data)
+{
+	glBufferData(GL_ARRAY_BUFFER, data->num_vertices * sizeof(float), data->vertices, GL_DYNAMIC_DRAW);
+}
+
+void delete_gldata(GLData* data)
+{
+	glDeleteVertexArrays(1, &(data->VAO));
+	glDeleteBuffers(1, &(data->VBO));
+	glDeleteBuffers(1, &(data->EBO));
+	glDeleteProgram(data->shader);
+	// just in case not handled in main:
+	/*if (data->indices)
+		delete[] data->indices;
+	if (data->vertices)
+		delete[] data->vertices;*/
 }
