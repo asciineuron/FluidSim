@@ -1,6 +1,6 @@
 #pragma once
 
-constexpr int GRID_SIZE = 150;
+constexpr int GRID_SIZE = 200;
 constexpr float INV_SIZE_SMALL = 1./(GRID_SIZE-1.);
 
 struct Vec2D

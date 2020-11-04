@@ -8,17 +8,22 @@
 #include "GLDisplay.h"
 
 
-
 // grid spacing:
 constexpr double dx = 1.;
 // for speed mult is faster than div:
 constexpr double inv_dx = 1.;
+constexpr double inv_dx_half = 0.5 * inv_dx;
 // step in time:
 constexpr double dt = 1.;
 // "kinematic viscosity"
 constexpr double nu = 1.;
+constexpr double gamma = 1.; // hmm seems to *grow* for values larger than 1! i.e. 1 is already the slowest
 // for singularity at force...
-constexpr double delta = 0.1;
+constexpr double delta = 0.2;
+// for display, allows reference for the 
+// e.g. dye as it gets dilute in the medium
+constexpr double max_scalar_density = 1.;
+
 
 
 Vec2D compute_force(const Vec2D& pt, const PtForce& f)
@@ -67,6 +72,7 @@ double scalar_interpolate(ScalarVecField* u, Vec2D& pos)
 
 void advect(VecVecField* u, VecVecField* temp)
 {
+#pragma omp parallel for collapse(2)
 	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
 		for (int x = 1; x < GRID_SIZE - 1; x++)
@@ -74,7 +80,7 @@ void advect(VecVecField* u, VecVecField* temp)
 			// have to ensure it is actually within bounds, else do what? guess just ignore
 			Vec2D oldpos = { (double)x - u->data[y][x].x, (double)y - u->data[y][x].y };
 			if (oldpos.x <= GRID_SIZE - 1 && oldpos.x >= 0 && oldpos.y <= GRID_SIZE - 1 && oldpos.y >= 0)
-			{ 
+			{
 				Vec2D oldval = vec_interpolate(u, oldpos);
 				temp->data[y][x] = oldval;
 			}
@@ -82,7 +88,7 @@ void advect(VecVecField* u, VecVecField* temp)
 			{
 				temp->data[y][x] = u->data[y][x]; // i.e. leave alone elsewise
 			}
-			
+
 		}
 	}
 	copy_temp_to_u(u, temp);
@@ -92,6 +98,7 @@ void advect_scalar(VecVecField* u, ScalarVecField* d, ScalarVecField* temp)
 {
 	// whereas "advect" is u's self advection, here we advect
 	// e.g. a dye suspended in the medium
+#pragma omp parallel for collapse(2)
 	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
 		for (int x = 1; x < GRID_SIZE - 1; x++)
@@ -125,15 +132,20 @@ void iterative_poisson_diffusion(VecVecField* u, VecVecField* temp)
 	// i.e. add up change for each cell, see if average change
 	// within some limit
 	// this however would be an extra expense
-	int number_iterations = 40;
+	int number_iterations = 60;
+
 	for (int repeat = 0; repeat < number_iterations; repeat++)
 	{
+#pragma omp parallel for collapse(2)
 		// exclude edges?
 		for (int y = 1; y < GRID_SIZE - 1; y++)
 		{
 			for (int x = 1; x < GRID_SIZE - 1; x++)
 			{
-				temp->data[y][x] = vecScale(vecAdd(vecAdd(vecAdd(vecAdd(u->data[y - 1][x], u->data[y + 1][x]), u->data[y][x - 1]), u->data[y][x + 1]), vecScale(u->data[y][x], alpha)), inv_beta);
+				// here is the major slowdown...
+				temp->data[y][x].x = inv_beta * (u->data[y - 1][x].x + u->data[y + 1][x].x + u->data[y][x - 1].x + u->data[y][x + 1].x + alpha * u->data[y][x].x);
+				temp->data[y][x].y = inv_beta * (u->data[y - 1][x].y + u->data[y + 1][x].y + u->data[y][x - 1].y + u->data[y][x + 1].y + alpha * u->data[y][x].y);
+				//temp->data[y][x] = vecScale(vecAdd(vecAdd(vecAdd(vecAdd(u->data[y - 1][x], u->data[y + 1][x]), u->data[y][x - 1]), u->data[y][x + 1]), vecScale(u->data[y][x], alpha)), inv_beta);
 			}
 		}
 		copy_temp_to_u(u, temp);
@@ -142,7 +154,8 @@ void iterative_poisson_diffusion(VecVecField* u, VecVecField* temp)
 
 inline double vec_div(VecVecField* v, int x, int y)
 {
-	return 0.5 * inv_dx * (v->data[y][x + 1].x - v->data[y][x - 1].x) + 0.5 * inv_dx * (v->data[y + 1][x].y - v->data[y - 1][x].y);
+	//return 0.5 * inv_dx * (v->data[y][x + 1].x - v->data[y][x - 1].x) + 0.5 * inv_dx * (v->data[y + 1][x].y - v->data[y - 1][x].y);
+	return inv_dx_half * (v->data[y][x + 1].x - v->data[y][x - 1].x + v->data[y + 1][x].y - v->data[y - 1][x].y);
 }
 
 void iterative_poisson_pressure(ScalarVecField* p, ScalarVecField* temp, VecVecField* w)
@@ -154,9 +167,11 @@ void iterative_poisson_pressure(ScalarVecField* p, ScalarVecField* temp, VecVecF
 	double beta = 4;
 	double inv_beta = 1 / beta;
 
-	int number_iterations = 40;
+	int number_iterations = 60;
+
 	for (int repeat = 0; repeat < number_iterations; repeat++)
 	{
+#pragma omp parallel for collapse(2)
 		// exclude edges?
 		for (int y = 1; y < GRID_SIZE - 1; y++)
 		{
@@ -169,8 +184,33 @@ void iterative_poisson_pressure(ScalarVecField* p, ScalarVecField* temp, VecVecF
 	}
 }
 
+void iterative_poisson_dye(ScalarVecField* dye, ScalarVecField* temp)
+{
+	// went too fast so scale down, set gamma different from nu
+	double alpha = pow(dx, 2) / (gamma * dt);
+	double beta = 4 + alpha;
+	double inv_beta = 1 / beta; // since mult faster than divide
+
+	int number_iterations = 60;
+
+	for (int repeat = 0; repeat < number_iterations; repeat++)
+	{
+#pragma omp parallel for collapse(2)
+		// exclude edges?
+		for (int y = 1; y < GRID_SIZE - 1; y++)
+		{
+			for (int x = 1; x < GRID_SIZE - 1; x++)
+			{
+				temp->data[y][x] = inv_beta * (dye->data[y - 1][x] + dye->data[y + 1][x] + dye->data[y][x + 1] + dye->data[y][x - 1] + dye->data[y][x]);
+			}
+		}
+		copy_temp_to_p(dye, temp);
+	}
+}
+
 void subtract_pressure_gradient(VecVecField* w, ScalarVecField* p)
 {
+#pragma omp parallel for collapse(2)
 	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
 		for (int x = 1; x < GRID_SIZE - 1; x++)
@@ -187,7 +227,8 @@ void add_force(VecVecField* u, const PtForce& f)
 {
 	// F*t = delta momentum = m * (delta v) i.e. take m=1 get delta v, that is u
 	// just doing a simple F scalar not the vector case given.. (easier to input)
-	double impulse_radius = 1.;
+	// double impulse_radius = 1.;
+#pragma omp parallel for collapse(2)
 	for (int y = 1; y < GRID_SIZE - 1; y++)
 	{
 		for (int x = 1; x < GRID_SIZE - 1; x++)
@@ -199,10 +240,12 @@ void add_force(VecVecField* u, const PtForce& f)
 	}
 }
 
-void enforce_boundary(VecVecField* u, ScalarVecField* p)
+void enforce_boundary(VecVecField* u, ScalarVecField* p, ScalarVecField* dye)
 {
+	// should we enforce boundary on dye too? as with p perhaps
 	// must have u on perimeter = 0, and normal p deriv = 0
 	// update at each step
+#pragma omp parallel for
 	for (int i = 1; i < GRID_SIZE - 1; i++)
 	{
 		// left:
@@ -218,13 +261,28 @@ void enforce_boundary(VecVecField* u, ScalarVecField* p)
 		p->data[0][i] = p->data[1][i];
 		u->data[0][i] = vecScale(u->data[1][i], -1.);
 	}
+	if (dye) // doesn't really seem to have an effect...
+	{
+#pragma omp parallel for
+		for (int i = 1; i < GRID_SIZE - 1; i++)
+		{
+			dye->data[i][0] = dye->data[i][1];
+			dye->data[i][GRID_SIZE - 1] = dye->data[i][GRID_SIZE - 2];
+			dye->data[GRID_SIZE - 1][i] = dye->data[GRID_SIZE - 2][i];
+			dye->data[0][i] = dye->data[1][i];
+		}
+	}
 }
 
 void step(VecVecField* u, VecVecField* temp_u, ScalarVecField* p, ScalarVecField* temp_p, const std::vector<PtForce>& forces, ScalarVecField* dye)
 {
 	advect(u, temp_u);
 	if (dye)
+	{
 		advect_scalar(u, dye, temp_p); // will overwrite temp anyway so can reuse p's
+		// add diffusion:
+		iterative_poisson_dye(dye, temp_p);
+	}
 	iterative_poisson_diffusion(u, temp_u);
 	for (auto& f : forces)
 	{
@@ -335,7 +393,7 @@ inline float grid_to_screen(int gridpos)
 {
 	// convert grid pos in 0..SIZE
 	// to screen coord in -1..1
-	return 2 * ((float)gridpos - 0.5 * (GRID_SIZE-1.)) * INV_SIZE_SMALL;
+	return 2 * ((float)gridpos - 0.5 * (GRID_SIZE - 1.)) * INV_SIZE_SMALL;
 }
 
 inline int vertex_access(int y, int x)
@@ -380,13 +438,13 @@ float* generate_vertices()
 unsigned int* generate_indices()
 {
 	// six points per square, from 2 triangles
-	unsigned int* indices = new unsigned int[6*(GRID_SIZE-1)*(GRID_SIZE-1)];
+	unsigned int* indices = new unsigned int[6 * (GRID_SIZE - 1) * (GRID_SIZE - 1)];
 	for (int y = 0; y < GRID_SIZE - 1; y++)
 	{
 		for (int x = 0; x < GRID_SIZE - 1; x++)
 		{
 			// now not scaled 3 or 6 (vs the vertices) since looking at row not elem
-			indices[6*y * (GRID_SIZE - 1) + 6 * x + 0] = index_access(y, x); // sw
+			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 0] = index_access(y, x); // sw
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 1] = index_access(y, x) + 1; // se
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 2] = index_access(y, x) + GRID_SIZE; // nw 
 			indices[6 * y * (GRID_SIZE - 1) + 6 * x + 3] = index_access(y, x) + 1; // se
@@ -399,7 +457,9 @@ unsigned int* generate_indices()
 
 void color_vertices_from_p(float* vertices, const ScalarVecField& p)
 {
-	double min_value = 0.;
+	// want to fix these by taking max value one time...
+	// i.e. if initial dye concentration is 1, shouldn't be able to get more concentrated
+	/*double min_value = 0.;
 	double max_value = 0.;
 	for (int y = 0; y < GRID_SIZE; y++)
 	{
@@ -411,6 +471,8 @@ void color_vertices_from_p(float* vertices, const ScalarVecField& p)
 				min_value = p.data[y][x];
 		}
 	}
+	max_value = 1;*/
+	
 	for (int y = 0; y < GRID_SIZE; y++)
 	{
 		for (int x = 0; x < GRID_SIZE; x++)
@@ -420,12 +482,12 @@ void color_vertices_from_p(float* vertices, const ScalarVecField& p)
 			// use old code to convert p to r/g:
 			if (p.data[y][x] > 0)
 			{
-				float shade = (p.data[y][x]) / max_value;
+				float shade = (p.data[y][x]) / max_scalar_density;
 				vertices[vertex_access(y, x) + 4] = shade;
 			}
 			else
 			{
-				float shade = abs((p.data[y][x]) / min_value);
+				float shade = abs((p.data[y][x]) / max_scalar_density);
 				vertices[vertex_access(y, x) + 3] = shade;
 			}
 		}
@@ -461,13 +523,36 @@ void color_vertices_from_u(float* vertices, const VecVecField& u)
 void place_dye(ScalarVecField* dye)
 {
 	// just some random adding of dye, can make more elegant in the future
-	for (int i = GRID_SIZE / 2 -40; i < GRID_SIZE/2 + 40; i++)
+	// try an even dusting rather than fixed blob?
+	/*for (int i = GRID_SIZE / 2 - 40; i < GRID_SIZE / 2 + 40; i++)
 	{
 		for (int j = GRID_SIZE / 2 - 40; j < i; j++)
 		{
 			dye->data[i][j] = 1;
 		}
+	}*/
+	for (int y = 1; y < GRID_SIZE - 1; y += 4)
+	{
+		for (int x = 1; x < GRID_SIZE - 1; x += 4)
+		{
+			// being above the max density just means we won't notice a decrease in
+			// concentration until it dips below that, essentially giving more bulk to the dye
+			dye->data[y][x] = 6;
+		}
 	}
+}
+
+void place_forces(std::vector<PtForce>& forces)
+{
+	// set up some forces... try around edges?
+		/*forces.push_back({ {0., 0.}, -0.2 });
+		forces.push_back({ {GRID_SIZE - 1., GRID_SIZE-1.}, 0.2 });
+		forces.push_back({ {0., GRID_SIZE - 1.}, 0.2 });
+		forces.push_back({ {GRID_SIZE-1., 0}, 0.2 });*/
+	forces.push_back({ {GRID_SIZE / 2. + 10, GRID_SIZE / 2.}, -0.1 });
+	forces.push_back({ {GRID_SIZE / 2. - 10, GRID_SIZE / 2.}, -0.1 });
+	forces.push_back({ {GRID_SIZE / 2., GRID_SIZE / 2. + 10}, 0.1 });
+	forces.push_back({ {GRID_SIZE / 2., GRID_SIZE / 2. - +10}, 0.1 });
 }
 
 int main()
@@ -484,18 +569,19 @@ int main()
 	init_ScalarVecField(p);
 	init_ScalarVecField(temp_p);
 	init_ScalarVecField(dye);
-	
+
 	place_dye(dye);
-	
+
 	// add 1/r forces:
 	PtForce force = { {GRID_SIZE / 2. + 20., GRID_SIZE / 2. + 20.}, -0.2 };
 	PtForce force2 = { {GRID_SIZE / 2. - 20, GRID_SIZE / 2.}, 0.5 };
 	std::vector<PtForce> forces;
-	forces.push_back(force);
-	forces.push_back(force2);
+	place_forces(forces);
+	//forces.push_back(force);
+	//forces.push_back(force2);
 
 	GLFWwindow* glwindow = init_window();
-	
+
 	int num_vertices = 6 * GRID_SIZE * GRID_SIZE;
 	float* vertices = generate_vertices();
 
@@ -504,16 +590,16 @@ int main()
 
 	GLData* gldata = init_gl(vertices, num_vertices, indices, num_indices);
 
-	while(!update_window(glwindow, gldata)) // run until press escape/window closes
+	while (!update_window(glwindow, gldata)) // run until press escape/window closes
 	{
-		enforce_boundary(u, p); // should be in step but for display purposes it is here
+		enforce_boundary(u, p, dye); // should be in step but for display purposes it is here
 		// NOTE if p always positive (like dye) then can store in third channel, and display both p and u!
 		color_vertices_from_p(vertices, *dye);
 		color_vertices_from_u(vertices, *u);
 		update_gl_vertices(gldata);
 		step(u, temp_u, p, temp_p, forces, dye);
 	}
-	
+
 
 	delete u;
 	delete temp_u;

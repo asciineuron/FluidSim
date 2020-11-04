@@ -40,6 +40,7 @@ void init_VecVecField(VecVecField* u)
 
 void copy_temp_to_u(VecVecField* u, VecVecField* temp)
 {
+#pragma omp parallel for collapse(2)
 	for (int y = 0; y < GRID_SIZE; y++)
 	{
 		for (int x = 0; x < GRID_SIZE; x++)
@@ -51,6 +52,7 @@ void copy_temp_to_u(VecVecField* u, VecVecField* temp)
 
 void copy_temp_to_p(ScalarVecField* p, ScalarVecField* temp)
 {
+#pragma omp parallel for collapse(2)
 	for (int y = 0; y < GRID_SIZE; y++)
 	{
 		for (int x = 0; x < GRID_SIZE; x++)
