@@ -47,6 +47,24 @@ Vec2D vec_interpolate(VecVecField* u, Vec2D& pos)
 		vecScale(vecAdd(vecScale(fQ21, (y2 - pos.y)), vecScale(fQ22, (pos.y - y1))), (pos.x - x1)));*/
 }
 
+double scalar_interpolate(ScalarVecField* u, Vec2D& pos)
+{
+	// bilinear interpolation
+	int x1 = (int)pos.x;
+	int x2 = (int)pos.x + 1;
+	int y1 = (int)pos.y;
+	int y2 = (int)pos.y + 1;
+	double fQ11 = u->data[y1][x1];
+	double fQ12 = u->data[y2][x1];
+	double fQ21 = u->data[y1][x2];
+	double fQ22 = u->data[y2][x2];
+	// just cut off one of the xy terms?
+	return (x2 - pos.x) * (fQ11 * (y2 - pos.y) + fQ12 * (pos.y - y1)) + (pos.x - x1) * (fQ21 * (y2 - pos.y) + fQ22 * (pos.y - y1));
+	// ^ may be faster since not creating so many structs... instead splitting manually
+	/*return vecAdd(vecScale(vecAdd(vecScale(fQ11, (y2 - pos.y)), vecScale(fQ12, (pos.y - y1))), (x2 - pos.x)),
+		vecScale(vecAdd(vecScale(fQ21, (y2 - pos.y)), vecScale(fQ22, (pos.y - y1))), (pos.x - x1)));*/
+}
+
 void advect(VecVecField* u, VecVecField* temp)
 {
 	for (int y = 1; y < GRID_SIZE - 1; y++)
@@ -68,6 +86,31 @@ void advect(VecVecField* u, VecVecField* temp)
 		}
 	}
 	copy_temp_to_u(u, temp);
+}
+
+void advect_scalar(VecVecField* u, ScalarVecField* d, ScalarVecField* temp)
+{
+	// whereas "advect" is u's self advection, here we advect
+	// e.g. a dye suspended in the medium
+	for (int y = 1; y < GRID_SIZE - 1; y++)
+	{
+		for (int x = 1; x < GRID_SIZE - 1; x++)
+		{
+			// have to ensure it is actually within bounds, else do what? guess just ignore
+			Vec2D oldpos = { (double)x - u->data[y][x].x, (double)y - u->data[y][x].y };
+			if (oldpos.x <= GRID_SIZE - 1 && oldpos.x >= 0 && oldpos.y <= GRID_SIZE - 1 && oldpos.y >= 0)
+			{
+				double oldval = scalar_interpolate(d, oldpos);
+				temp->data[y][x] = oldval;
+			}
+			else
+			{
+				temp->data[y][x] = d->data[y][x]; // i.e. leave alone elsewise
+			}
+
+		}
+	}
+	copy_temp_to_p(d, temp);
 }
 
 void iterative_poisson_diffusion(VecVecField* u, VecVecField* temp)
@@ -177,9 +220,11 @@ void enforce_boundary(VecVecField* u, ScalarVecField* p)
 	}
 }
 
-void step(VecVecField* u, VecVecField* temp_u, ScalarVecField* p, ScalarVecField* temp_p, const std::vector<PtForce>& forces)
+void step(VecVecField* u, VecVecField* temp_u, ScalarVecField* p, ScalarVecField* temp_p, const std::vector<PtForce>& forces, ScalarVecField* dye)
 {
 	advect(u, temp_u);
+	if (dye)
+		advect_scalar(u, dye, temp_p); // will overwrite temp anyway so can reuse p's
 	iterative_poisson_diffusion(u, temp_u);
 	for (auto& f : forces)
 	{
@@ -376,12 +421,12 @@ void color_vertices_from_p(float* vertices, const ScalarVecField& p)
 			if (p.data[y][x] > 0)
 			{
 				float shade = (p.data[y][x]) / max_value;
-				vertices[vertex_access(y, x) + 3] = shade;
+				vertices[vertex_access(y, x) + 4] = shade;
 			}
 			else
 			{
 				float shade = abs((p.data[y][x]) / min_value);
-				vertices[vertex_access(y, x) + 4] = shade;
+				vertices[vertex_access(y, x) + 3] = shade;
 			}
 		}
 	}
@@ -413,6 +458,18 @@ void color_vertices_from_u(float* vertices, const VecVecField& u)
 	}
 }
 
+void place_dye(ScalarVecField* dye)
+{
+	// just some random adding of dye, can make more elegant in the future
+	for (int i = GRID_SIZE / 2 -40; i < GRID_SIZE/2 + 40; i++)
+	{
+		for (int j = GRID_SIZE / 2 - 40; j < i; j++)
+		{
+			dye->data[i][j] = 1;
+		}
+	}
+}
+
 int main()
 {
 	// init to heap so doesn't overflow stack...
@@ -420,15 +477,19 @@ int main()
 	VecVecField* temp_u = new VecVecField();
 	ScalarVecField* p = new ScalarVecField();
 	ScalarVecField* temp_p = new ScalarVecField();
+	ScalarVecField* dye = new ScalarVecField(); // update dye with advection.. can also do diffusion
 	// zero out:
 	init_VecVecField(u);
 	init_VecVecField(temp_u);
 	init_ScalarVecField(p);
 	init_ScalarVecField(temp_p);
-
+	init_ScalarVecField(dye);
+	
+	place_dye(dye);
+	
 	// add 1/r forces:
-	PtForce force = { {GRID_SIZE / 2. + 8, GRID_SIZE / 2}, 0.5 };
-	PtForce force2 = { {GRID_SIZE / 2. - 8, GRID_SIZE / 2}, 0.5 };
+	PtForce force = { {GRID_SIZE / 2. + 20., GRID_SIZE / 2. + 20.}, -0.2 };
+	PtForce force2 = { {GRID_SIZE / 2. - 20, GRID_SIZE / 2.}, 0.5 };
 	std::vector<PtForce> forces;
 	forces.push_back(force);
 	forces.push_back(force2);
@@ -442,18 +503,15 @@ int main()
 	unsigned int* indices = generate_indices();
 
 	GLData* gldata = init_gl(vertices, num_vertices, indices, num_indices);
-	Sleep(3000);
+
 	while(!update_window(glwindow, gldata)) // run until press escape/window closes
 	{
 		enforce_boundary(u, p); // should be in step but for display purposes it is here
-		//display(p);
-		//print_to_ppm(*p);
-		//print_vel_to_ppm(*u);
-		//color_vertices_from_p(vertices, *p);
+		// NOTE if p always positive (like dye) then can store in third channel, and display both p and u!
+		color_vertices_from_p(vertices, *dye);
 		color_vertices_from_u(vertices, *u);
 		update_gl_vertices(gldata);
-		step(u, temp_u, p, temp_p, forces);
-		getchar();//Sleep(1000);
+		step(u, temp_u, p, temp_p, forces, dye);
 	}
 	
 
